@@ -1,0 +1,15 @@
+{
+  "name": "islam-reels",
+  "version": "1.0.0",
+  "description": "إسلام ريلز — صانع ريلز قرآنية",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.22.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
