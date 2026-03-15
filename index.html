@@ -9,9 +9,9 @@
       script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com blob:;
       style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
       font-src 'self' https://fonts.gstatic.com data:;
-      connect-src 'self' https://cdn.jsdelivr.net https://unpkg.com https://api.alquran.cloud https://api.qurancdn.com https://everyayah.com https://cdn.islamic.network https://verses.quran.com https://al-quran.info https://quran-api.pages.dev;
+      connect-src *;
       img-src 'self' data: blob:;
-      media-src 'self' blob: https://everyayah.com https://cdn.islamic.network https://verses.quran.com;
+      media-src * blob: data:;
       worker-src 'self' blob:;
       child-src blob:;
     "
@@ -8498,9 +8498,12 @@
           a3 = String(an).padStart(3, "0"),
           ayahN = parseInt(an);
         return [
-          `https://everyayah.com/data/${sh.folder}/${s3}${a3}.mp3`,
+          // cdn.islamic.network يدعم CORS — الأولوية الأولى
           `https://cdn.islamic.network/quran/audio/128/${sh.islamicId}/${ayahN}.mp3`,
+          // verses.quran.com — بديل ثاني
           `https://verses.quran.com/${sh.versesId}/mp3/${s3}${a3}.mp3`,
+          // everyayah — بديل ثالث (قد يواجه CORS على بعض البيئات)
+          `https://everyayah.com/data/${sh.folder}/${s3}${a3}.mp3`,
         ];
       }
       const ayahUrl = (sh, sn, an) => ayahUrls(sh, sn, an)[0];
@@ -8548,7 +8551,15 @@
         $("npS").style.color = "#c9973a";
         audio._fallbackUrls = urls;
         audio._fallbackIdx = 1;
-        audio.src = urls[0];
+        // جرب تحميل الصوت عبر fetch عشان تتجاوز مشاكل CORS
+        _loadAudioUrl(urls[0], urls, 0, autoPlay);
+      }
+
+      function _loadAudioUrl(url, allUrls, idx, autoPlay) {
+        audio._fallbackUrls = allUrls;
+        audio._fallbackIdx = idx + 1;
+        audio.crossOrigin = null; // لا تضع crossOrigin عشان everyayah مش بيدعمه
+        audio.src = url;
         audio.load();
         if (autoPlay) pendingPlay = true;
       }
