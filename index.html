@@ -26,7 +26,7 @@
       content="black-translucent"
     />
     <meta name="apple-mobile-web-app-title" content="Islam Reels" />
-    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <!-- <link rel="apple-touch-icon" href="/icons/icon-192.png" /> -->
     <link
       rel="icon"
       type="image/png"
@@ -45,9 +45,8 @@
       window._mp4MuxerLoaded = false;
       (function () {
         const SOURCES = [
-          "/libs/mp4-muxer.js", // محلي
-          "https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.js", // CDN 1
-          "https://unpkg.com/mp4-muxer@5/build/mp4-muxer.js", // CDN 2
+          "https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.js",
+          "https://unpkg.com/mp4-muxer@5/build/mp4-muxer.js",
         ];
         let idx = 0;
         function tryNext() {
@@ -1787,7 +1786,6 @@
         gap: 5px;
       }
       .ae-eqsl {
-        -webkit-appearance: slider-vertical;
         writing-mode: vertical-lr;
         direction: rtl;
         width: 24px;
@@ -10783,7 +10781,7 @@
       window.addEventListener("load", () => {
         if (!("serviceWorker" in navigator)) return;
         navigator.serviceWorker
-          .register("/sw.js", { scope: "/" })
+          .register("./sw.js").catch(()=>{})
           .then((reg) => {
             console.log("[SW] registered, scope:", reg.scope);
             reg.addEventListener("updatefound", () => {
