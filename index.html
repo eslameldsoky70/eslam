@@ -4834,6 +4834,126 @@
               </div>
             </div>
           </div>
+          <div class="sec" style="padding: 0">
+            <div
+              onclick="toggleAcc(this)"
+              style="
+                display: flex;
+                align-items: center;
+                gap: 9px;
+                cursor: pointer;
+                padding: 13px 13px;
+                user-select: none;
+              "
+            >
+              <span style="font-size: 17px">✨</span>
+              <span
+                style="
+                  font-size: 13px;
+                  font-weight: 700;
+                  color: #b5c4bc;
+                  flex: 1;
+                  transition: color 0.2s;
+                "
+                >التأثيرات</span
+              >
+              <span
+                class="acc-arrow"
+                style="
+                  color: #6e8878;
+                  font-size: 11px;
+                  transition:
+                    transform 0.2s,
+                    color 0.2s;
+                "
+                >▶</span
+              >
+            </div>
+            <div style="display: none">
+              <div class="sw-row" onclick="toggleFx('stars')">
+                <span class="sw-l">✦ نجوم لامعة</span>
+                <div
+                  class="sw"
+                  id="sw-stars"
+                  style="
+                    background: linear-gradient(135deg, #245c38, #3ea066);
+                    border: 1px solid rgba(62, 160, 102, 0.4);
+                  "
+                >
+                  <div class="sw-k" style="right: 3px"></div>
+                </div>
+              </div>
+              <div class="sw-row" onclick="toggleFx('glow')">
+                <span class="sw-l">🌟 هالة نورانية</span>
+                <div
+                  class="sw"
+                  id="sw-glow"
+                  style="
+                    background: linear-gradient(135deg, #245c38, #3ea066);
+                    border: 1px solid rgba(62, 160, 102, 0.4);
+                  "
+                >
+                  <div class="sw-k" style="right: 3px"></div>
+                </div>
+              </div>
+              <div class="sw-row" onclick="toggleFx('particles')">
+                <span class="sw-l">✨ جسيمات متطايرة</span>
+                <div
+                  class="sw"
+                  id="sw-particles"
+                  style="
+                    background: linear-gradient(135deg, #245c38, #3ea066);
+                    border: 1px solid rgba(62, 160, 102, 0.4);
+                  "
+                >
+                  <div class="sw-k" style="right: 3px"></div>
+                </div>
+              </div>
+              <div class="sw-row" onclick="toggleFx('border')">
+                <span class="sw-l">🔲 إطار زخرفي</span>
+                <div
+                  class="sw"
+                  id="sw-border"
+                  style="
+                    background: linear-gradient(135deg, #245c38, #3ea066);
+                    border: 1px solid rgba(62, 160, 102, 0.4);
+                  "
+                >
+                  <div class="sw-k" style="right: 3px"></div>
+                </div>
+              </div>
+              <div class="sw-row" onclick="toggleFx('wave')">
+                <span class="sw-l">🎵 موجة صوتية</span>
+                <div
+                  class="sw"
+                  id="sw-wave"
+                  style="
+                    background: linear-gradient(135deg, #245c38, #3ea066);
+                    border: 1px solid rgba(62, 160, 102, 0.4);
+                  "
+                >
+                  <div class="sw-k" style="right: 3px"></div>
+                </div>
+              </div>
+              <div
+                class="sw-row"
+                onclick="toggleFx('fadein')"
+                style="border-bottom: none"
+              >
+                <span class="sw-l">🌫 ظهور تدريجي للنص</span>
+                <div
+                  class="sw"
+                  id="sw-fadein"
+                  style="
+                    background: linear-gradient(135deg, #245c38, #3ea066);
+                    border: 1px solid rgba(62, 160, 102, 0.4);
+                  "
+                >
+                  <div class="sw-k" style="right: 3px"></div>
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="sec">
             <span class="lbl">علامة مائية</span>
             <input
@@ -7300,7 +7420,7 @@
           const canMP4 =
             typeof VideoEncoder !== "undefined" &&
             typeof AudioEncoder !== "undefined" &&
-            typeof Mp4Muxer !== "undefined";
+            (typeof Mp4Muxer !== "undefined" || window._mp4MuxerLoaded);
 
           if (_exportFmt === "mp4" && _turboMode && canMP4) {
             toast$("⚡ تصدير MP4 بصوت مخصص...");
@@ -7501,12 +7621,25 @@
         // وقف الـ slideshow أثناء التصدير
         if (window._bgSlideTimer) { clearInterval(window._bgSlideTimer); window._bgSlideTimer = null; }
 
+        // انتظر mp4-muxer لو لسه بيتحمّل (max 5 ثواني)
+        if (typeof Mp4Muxer === "undefined" && !window._mp4MuxerLoaded) {
+          toast$("⏳ جاري تحميل مكتبة MP4...");
+          await new Promise(resolve => {
+            let t = 0;
+            const iv = setInterval(() => {
+              t += 200;
+              if (typeof Mp4Muxer !== "undefined" || window._mp4MuxerLoaded || t >= 5000) {
+                clearInterval(iv); resolve();
+              }
+            }, 200);
+          });
+        }
         // اختيار المسار
         /* canMP4: نتحقق من Mp4Muxer (CDN) أو _mp4MuxerLoaded (loaded async) */
         const canMP4 =
           typeof VideoEncoder !== "undefined" &&
           typeof AudioEncoder !== "undefined" &&
-          typeof Mp4Muxer !== "undefined";
+          (typeof Mp4Muxer !== "undefined" || window._mp4MuxerLoaded);
 
         if (_exportFmt === "mp4" && _turboMode && canMP4) {
           toast$("⚡ تصدير MP4...");
@@ -7610,7 +7743,7 @@
         // بناء audio arrays — SR الحقيقي من الـ buffers مع ثانيتين padding
         const actualSR = buffers[0].sampleRate;
         const actualTotalSamp =
-          buffers.reduce((s, b) => s + b.length, 0) + actualSR * 2;
+          buffers.reduce((s, b) => s + b.length, 0) + Math.ceil(actualSR * 0.5);
         const aL = new Float32Array(actualTotalSamp),
           aR = new Float32Array(actualTotalSamp);
         let aOff = 0;
@@ -7763,7 +7896,7 @@
 
         // نضيف ثانيتين audio صامت + video بعد آخر آية تضمن تسجيل آخر كلمة
         if (!_expAbort && !vEncErr) {
-          const extraFrames = Math.ceil(FPS * 2);
+          const extraFrames = Math.ceil(FPS * 0.5); // 0.5s tail
           for (let f = 0; f < extraFrames; f++) {
             if (_expAbort || vEncErr) break;
             if (audioSent < totalSamp) {
@@ -7967,7 +8100,7 @@
         // نستخدم sample rate الـ buffers الأصلي عشان ما نحتاجش resample
         const SR = buffers[0].sampleRate;
         const nCh = 2;
-        const TAIL = Math.ceil(SR * 2);
+        const TAIL = Math.ceil(SR * 0.5); // 0.5s tail to prevent audio cutoff
 
         let totalSamp = 0;
         buffers.forEach((b) => {
@@ -8051,9 +8184,12 @@
         toast$(_recIsMP4 ? "🎬 تسجيل MP4 مباشر..." : "🎬 تسجيل WebM...");
 
         exportChunks = [];
+        // على iOS Safari: videoBitsPerSecond مش بيتطبق دايماً — نجرب bitsPerSecond كمان
+        const _recBitrate = _isIOS ? Math.max(qp.bitrate || 4_000_000, 8_000_000) : qp.bitrate;
         exportRecorder = new MediaRecorder(combined, {
           mimeType,
-          videoBitsPerSecond: qp.bitrate,
+          videoBitsPerSecond: _recBitrate,
+          bitsPerSecond: _recBitrate,
         });
         exportRecorder.ondataavailable = (e) => {
           if (e.data?.size > 0) exportChunks.push(e.data);
@@ -8201,19 +8337,29 @@
         audioSrc.start(0);
 
         const t0 = performance.now();
+        // على iOS: استخدم requestAnimationFrame لضمان دقة التوقيت
+        const waitFrame = _isIOS
+          ? () => new Promise(r => requestAnimationFrame(r))
+          : (ms) => ms > 0 ? new Promise(r => setTimeout(r, ms)) : Promise.resolve();
+
         for (let f = 0; f < frameBlobs.length; f++) {
           if (_expAbort) break;
           const img = await createImageBitmap(frameBlobs[f]);
           ctx.drawImage(img, 0, 0);
           img.close();
           if (videoTrack?.requestFrame) videoTrack.requestFrame();
-          const wait = (f + 1) * msPerFrame - (performance.now() - t0);
-          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+          if (_isIOS) {
+            // انتظر الـ frame التالي عشان Safari يسجّل الـ frame الحالي
+            await waitFrame();
+          } else {
+            const wait = (f + 1) * msPerFrame - (performance.now() - t0);
+            if (wait > 0) await new Promise(r => setTimeout(r, wait));
+          }
           if (f % 20 === 0)
             _setProgress((_expTotalDur * f) / frameBlobs.length);
         }
 
-        await new Promise((r) => setTimeout(r, 800));
+        await new Promise((r) => setTimeout(r, _isIOS ? 1500 : 800));
         if (exportRecorder?.state !== "inactive") exportRecorder.stop();
       }
 
@@ -8487,14 +8633,14 @@
         size: 14,
         color: "#fff",
         fx: {
-          moon: false,
-          stars: false,
-          glow: false,
-          trans: false,
-          particles: false,
-          border: false,
+          moon: true,
+          stars: true,
+          glow: true,
+          trans: true,
+          particles: true,
+          border: true,
           wave: true,
-          fadein: false,
+          fadein: true,
         },
         playing: false,
         _orn: {
