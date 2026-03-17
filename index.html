@@ -4834,126 +4834,6 @@
               </div>
             </div>
           </div>
-          <div class="sec" style="padding: 0">
-            <div
-              onclick="toggleAcc(this)"
-              style="
-                display: flex;
-                align-items: center;
-                gap: 9px;
-                cursor: pointer;
-                padding: 13px 13px;
-                user-select: none;
-              "
-            >
-              <span style="font-size: 17px">✨</span>
-              <span
-                style="
-                  font-size: 13px;
-                  font-weight: 700;
-                  color: #b5c4bc;
-                  flex: 1;
-                  transition: color 0.2s;
-                "
-                >التأثيرات</span
-              >
-              <span
-                class="acc-arrow"
-                style="
-                  color: #6e8878;
-                  font-size: 11px;
-                  transition:
-                    transform 0.2s,
-                    color 0.2s;
-                "
-                >▶</span
-              >
-            </div>
-            <div style="display: none">
-              <div class="sw-row" onclick="toggleFx('stars')">
-                <span class="sw-l">✦ نجوم لامعة</span>
-                <div
-                  class="sw"
-                  id="sw-stars"
-                  style="
-                    background: linear-gradient(135deg, #245c38, #3ea066);
-                    border: 1px solid rgba(62, 160, 102, 0.4);
-                  "
-                >
-                  <div class="sw-k" style="right: 3px"></div>
-                </div>
-              </div>
-              <div class="sw-row" onclick="toggleFx('glow')">
-                <span class="sw-l">🌟 هالة نورانية</span>
-                <div
-                  class="sw"
-                  id="sw-glow"
-                  style="
-                    background: linear-gradient(135deg, #245c38, #3ea066);
-                    border: 1px solid rgba(62, 160, 102, 0.4);
-                  "
-                >
-                  <div class="sw-k" style="right: 3px"></div>
-                </div>
-              </div>
-              <div class="sw-row" onclick="toggleFx('particles')">
-                <span class="sw-l">✨ جسيمات متطايرة</span>
-                <div
-                  class="sw"
-                  id="sw-particles"
-                  style="
-                    background: linear-gradient(135deg, #245c38, #3ea066);
-                    border: 1px solid rgba(62, 160, 102, 0.4);
-                  "
-                >
-                  <div class="sw-k" style="right: 3px"></div>
-                </div>
-              </div>
-              <div class="sw-row" onclick="toggleFx('border')">
-                <span class="sw-l">🔲 إطار زخرفي</span>
-                <div
-                  class="sw"
-                  id="sw-border"
-                  style="
-                    background: linear-gradient(135deg, #245c38, #3ea066);
-                    border: 1px solid rgba(62, 160, 102, 0.4);
-                  "
-                >
-                  <div class="sw-k" style="right: 3px"></div>
-                </div>
-              </div>
-              <div class="sw-row" onclick="toggleFx('wave')">
-                <span class="sw-l">🎵 موجة صوتية</span>
-                <div
-                  class="sw"
-                  id="sw-wave"
-                  style="
-                    background: linear-gradient(135deg, #245c38, #3ea066);
-                    border: 1px solid rgba(62, 160, 102, 0.4);
-                  "
-                >
-                  <div class="sw-k" style="right: 3px"></div>
-                </div>
-              </div>
-              <div
-                class="sw-row"
-                onclick="toggleFx('fadein')"
-                style="border-bottom: none"
-              >
-                <span class="sw-l">🌫 ظهور تدريجي للنص</span>
-                <div
-                  class="sw"
-                  id="sw-fadein"
-                  style="
-                    background: linear-gradient(135deg, #245c38, #3ea066);
-                    border: 1px solid rgba(62, 160, 102, 0.4);
-                  "
-                >
-                  <div class="sw-k" style="right: 3px"></div>
-                </div>
-              </div>
-            </div>
-          </div>
           <div class="sec">
             <span class="lbl">علامة مائية</span>
             <input
@@ -8607,14 +8487,14 @@
         size: 14,
         color: "#fff",
         fx: {
-          moon: true,
-          stars: true,
-          glow: true,
-          trans: true,
-          particles: true,
-          border: true,
+          moon: false,
+          stars: false,
+          glow: false,
+          trans: false,
+          particles: false,
+          border: false,
           wave: true,
-          fadein: true,
+          fadein: false,
         },
         playing: false,
         _orn: {
