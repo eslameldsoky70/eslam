@@ -7420,7 +7420,7 @@
           const canMP4 =
             typeof VideoEncoder !== "undefined" &&
             typeof AudioEncoder !== "undefined" &&
-            (typeof Mp4Muxer !== "undefined" || window._mp4MuxerLoaded);
+            typeof Mp4Muxer !== "undefined";
 
           if (_exportFmt === "mp4" && _turboMode && canMP4) {
             toast$("⚡ تصدير MP4 بصوت مخصص...");
@@ -7621,25 +7621,12 @@
         // وقف الـ slideshow أثناء التصدير
         if (window._bgSlideTimer) { clearInterval(window._bgSlideTimer); window._bgSlideTimer = null; }
 
-        // انتظر mp4-muxer لو لسه بيتحمّل (max 5 ثواني)
-        if (typeof Mp4Muxer === "undefined" && !window._mp4MuxerLoaded) {
-          toast$("⏳ جاري تحميل مكتبة MP4...");
-          await new Promise(resolve => {
-            let t = 0;
-            const iv = setInterval(() => {
-              t += 200;
-              if (typeof Mp4Muxer !== "undefined" || window._mp4MuxerLoaded || t >= 5000) {
-                clearInterval(iv); resolve();
-              }
-            }, 200);
-          });
-        }
         // اختيار المسار
         /* canMP4: نتحقق من Mp4Muxer (CDN) أو _mp4MuxerLoaded (loaded async) */
         const canMP4 =
           typeof VideoEncoder !== "undefined" &&
           typeof AudioEncoder !== "undefined" &&
-          (typeof Mp4Muxer !== "undefined" || window._mp4MuxerLoaded);
+          typeof Mp4Muxer !== "undefined";
 
         if (_exportFmt === "mp4" && _turboMode && canMP4) {
           toast$("⚡ تصدير MP4...");
@@ -8184,12 +8171,9 @@
         toast$(_recIsMP4 ? "🎬 تسجيل MP4 مباشر..." : "🎬 تسجيل WebM...");
 
         exportChunks = [];
-        // على iOS Safari: videoBitsPerSecond مش بيتطبق دايماً — نجرب bitsPerSecond كمان
-        const _recBitrate = _isIOS ? Math.max(qp.bitrate || 4_000_000, 8_000_000) : qp.bitrate;
         exportRecorder = new MediaRecorder(combined, {
           mimeType,
-          videoBitsPerSecond: _recBitrate,
-          bitsPerSecond: _recBitrate,
+          videoBitsPerSecond: qp.bitrate,
         });
         exportRecorder.ondataavailable = (e) => {
           if (e.data?.size > 0) exportChunks.push(e.data);
@@ -8337,29 +8321,19 @@
         audioSrc.start(0);
 
         const t0 = performance.now();
-        // على iOS: استخدم requestAnimationFrame لضمان دقة التوقيت
-        const waitFrame = _isIOS
-          ? () => new Promise(r => requestAnimationFrame(r))
-          : (ms) => ms > 0 ? new Promise(r => setTimeout(r, ms)) : Promise.resolve();
-
         for (let f = 0; f < frameBlobs.length; f++) {
           if (_expAbort) break;
           const img = await createImageBitmap(frameBlobs[f]);
           ctx.drawImage(img, 0, 0);
           img.close();
           if (videoTrack?.requestFrame) videoTrack.requestFrame();
-          if (_isIOS) {
-            // انتظر الـ frame التالي عشان Safari يسجّل الـ frame الحالي
-            await waitFrame();
-          } else {
-            const wait = (f + 1) * msPerFrame - (performance.now() - t0);
-            if (wait > 0) await new Promise(r => setTimeout(r, wait));
-          }
+          const wait = (f + 1) * msPerFrame - (performance.now() - t0);
+          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
           if (f % 20 === 0)
             _setProgress((_expTotalDur * f) / frameBlobs.length);
         }
 
-        await new Promise((r) => setTimeout(r, _isIOS ? 1500 : 800));
+        await new Promise((r) => setTimeout(r, 800));
         if (exportRecorder?.state !== "inactive") exportRecorder.stop();
       }
 
