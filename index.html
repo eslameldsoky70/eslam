@@ -7122,6 +7122,85 @@
         toast$("⏹ تم إيقاف التصدير");
       }
 
+      // تحميل صوت آية واحدة — XHR → OfflineAudioContext → MediaRecorder
+      function _loadOneAyahBuf(url, expCtx) {
+        return new Promise(function(resolve) {
+          // محاولة 1: XHR
+          var xhr = new XMLHttpRequest();
+          xhr.open('GET', url, true);
+          xhr.responseType = 'arraybuffer';
+          xhr.timeout = 15000;
+          xhr.onload = function() {
+            if (xhr.status >= 200 && xhr.status < 300 && xhr.response) {
+              expCtx.decodeAudioData(
+                xhr.response,
+                function(buf) { resolve(buf); },
+                function() { _tryOffline(url, expCtx, resolve); }
+              );
+            } else { _tryOffline(url, expCtx, resolve); }
+          };
+          xhr.onerror = xhr.ontimeout = function() { _tryOffline(url, expCtx, resolve); };
+          try { xhr.send(); } catch(e) { _tryOffline(url, expCtx, resolve); }
+        });
+      }
+      function _tryOffline(url, expCtx, resolve) {
+        try {
+          var tmp = new Audio();
+          tmp.crossOrigin = 'anonymous';
+          var timer = setTimeout(function() { tmp.src=''; _tryRecorder(url, expCtx, resolve); }, 18000);
+          tmp.addEventListener('canplaythrough', function onR() {
+            tmp.removeEventListener('canplaythrough', onR);
+            var dur = tmp.duration;
+            if (!dur || !isFinite(dur)) { clearTimeout(timer); tmp.src=''; _tryRecorder(url, expCtx, resolve); return; }
+            var SR = expCtx.sampleRate || 44100;
+            var off;
+            try { off = new OfflineAudioContext(2, Math.ceil(dur * SR), SR); }
+            catch(e) { clearTimeout(timer); tmp.src=''; resolve(null); return; }
+            var ms;
+            try { ms = off.createMediaElementSource(tmp); }
+            catch(e) { clearTimeout(timer); tmp.src=''; _tryRecorder(url, expCtx, resolve); return; }
+            ms.connect(off.destination);
+            off.startRendering()
+              .then(function(buf) { clearTimeout(timer); tmp.src=''; resolve(buf); })
+              .catch(function() { clearTimeout(timer); tmp.src=''; resolve(null); });
+            tmp.currentTime = 0;
+            tmp.play().catch(function(){});
+          }, {once:true});
+          tmp.addEventListener('error', function() { clearTimeout(timer); _tryRecorder(url, expCtx, resolve); }, {once:true});
+          tmp.src = url; tmp.load();
+        } catch(e) { _tryRecorder(url, expCtx, resolve); }
+      }
+      function _tryRecorder(url, expCtx, resolve) {
+        try {
+          var ra = new Audio(); ra.crossOrigin='anonymous';
+          var timer = setTimeout(function(){ ra.src=''; resolve(null); }, 25000);
+          var chunks=[], rec;
+          ra.addEventListener('canplaythrough', function onR() {
+            ra.removeEventListener('canplaythrough', onR);
+            try {
+              var dc = new (window.AudioContext||window.webkitAudioContext)();
+              var s2 = dc.createMediaElementSource(ra);
+              var d2 = dc.createMediaStreamDestination();
+              s2.connect(d2);
+              rec = new MediaRecorder(d2.stream, {mimeType:'audio/webm'});
+              rec.ondataavailable = function(e){ if(e.data&&e.data.size>0) chunks.push(e.data); };
+              rec.onstop = function(){
+                var fr = new FileReader();
+                fr.onload = function(){
+                  expCtx.decodeAudioData(fr.result, function(buf){ clearTimeout(timer); resolve(buf); }, function(){ clearTimeout(timer); resolve(null); });
+                };
+                fr.readAsArrayBuffer(new Blob(chunks,{type:'audio/webm'}));
+              };
+              rec.start(100);
+              ra.currentTime=0; ra.play().catch(function(){});
+              ra.onended = function(){ setTimeout(function(){ try{rec.stop();}catch(e){} }, 200); };
+            } catch(e){ clearTimeout(timer); resolve(null); }
+          }, {once:true});
+          ra.addEventListener('error', function(){ clearTimeout(timer); resolve(null); }, {once:true});
+          ra.src=url; ra.load();
+        } catch(e){ resolve(null); }
+      }
+
       async function _loadData(expCtx, exportAyahs, sn) {
         if (S.sh.qdcId)
           await fetchWordTiming(sn, exportAyahs[0]).catch(() => {});
@@ -7132,12 +7211,8 @@
             const urls = ayahUrls(S.sh, sn, ayahN);
             let buf = null;
             for (const url of urls) {
-              try {
-                const r = await fetch(url, { mode: "cors" });
-                if (!r.ok) continue;
-                buf = await expCtx.decodeAudioData(await r.arrayBuffer());
-                break;
-              } catch (e) {}
+              buf = await _loadOneAyahBuf(url, expCtx);
+              if (buf) break;
             }
             if (!buf)
               throw Object.assign(new Error("فشل تحميل آية " + ayahN), {
@@ -7787,9 +7862,12 @@
           finalL = new Float32Array(totalSamp);
           finalR = new Float32Array(totalSamp);
           for (let i = 0; i < totalSamp; i++) {
-            const src = Math.min(Math.floor(i / ratio), actualTotalSamp - 1);
-            finalL[i] = aL[src];
-            finalR[i] = aR[src];
+            const sf = i / ratio;
+            const si = Math.min(Math.floor(sf), actualTotalSamp - 1);
+            const fr = sf - si;
+            const sn2 = Math.min(si + 1, actualTotalSamp - 1);
+            finalL[i] = aL[si] * (1 - fr) + aL[sn2] * fr;
+            finalR[i] = aR[si] * (1 - fr) + aR[sn2] * fr;
           }
         }
 
