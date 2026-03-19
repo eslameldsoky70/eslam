@@ -6691,6 +6691,13 @@
         xHide();
         _stopProgressIv();
         stopDrawLoop();
+        // استعادة canvas لحجم المعاينة 540×960
+        canvas.width  = 540;
+        canvas.height = 960;
+        _gradCache = null;
+        _mtCache.clear();
+        if (window._ornCache) window._ornCache = null;
+        markCstateDirty();
         lastDrawTime = 0;
         startDrawLoop();
         if (ctx) ctx.close().catch(() => {});
@@ -7108,6 +7115,13 @@
         isExporting = false;
         _stopProgressIv();
         stopDrawLoop();
+        // استعادة canvas لحجم المعاينة
+        canvas.width  = 540;
+        canvas.height = 960;
+        _gradCache = null;
+        _mtCache.clear();
+        if (window._ornCache) window._ornCache = null;
+        markCstateDirty();
         updateExportBtn(false);
         xHide();
         startDrawLoop();
@@ -11075,7 +11089,8 @@
       window.addEventListener("load", () => {
         if (!("serviceWorker" in navigator)) return;
         navigator.serviceWorker
-          .register("/sw.js", { scope: "/" })
+          .register((location.pathname.replace(/\/[^\/]*$/, '/') || '/') + 'sw.js',
+            { scope: location.pathname.replace(/\/[^\/]*$/, '/') || '/' })
           .then((reg) => {
             console.log("[SW] registered, scope:", reg.scope);
             reg.addEventListener("updatefound", () => {
