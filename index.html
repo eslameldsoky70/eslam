@@ -45,9 +45,9 @@
       window._mp4MuxerLoaded = false;
       (function () {
         const SOURCES = [
+          "/libs/mp4-muxer.js", // محلي
           "https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.js", // CDN 1
-          "https://unpkg.com/mp4-muxer@5/build/mp4-muxer.js",            // CDN 2
-          "/libs/mp4-muxer.js",                                           // محلي (fallback)
+          "https://unpkg.com/mp4-muxer@5/build/mp4-muxer.js", // CDN 2
         ];
         let idx = 0;
         function tryNext() {
@@ -6601,9 +6601,8 @@
         lastDrawTime = 0;
         const myGen = ++_drawLoopGen;
         function loop(ts) {
-          // لو stopDrawLoop اتستدعى وبدأت generation جديدة — قف
           if (!drawLoopActive || myGen !== _drawLoopGen) return;
-          // أثناء التصدير: الـ export loop هو اللي بيرسم — draw loop بيوقف
+          // أثناء التصدير: الـ export loop يرسم — draw loop يوقف نفسه
           if (isExporting) {
             drawLoopActive = false;
             return;
@@ -6621,7 +6620,6 @@
       }
       function stopDrawLoop() {
         drawLoopActive = false;
-        // نزيل الـ rAF المعلق — نستخدم counter للتأكد إن draw loop توقف فعلاً
         _drawLoopGen = (_drawLoopGen || 0) + 1;
       }
 
@@ -6693,13 +6691,6 @@
         xHide();
         _stopProgressIv();
         stopDrawLoop();
-        // استعادة canvas لحجم المعاينة 540×960
-        canvas.width  = 540;
-        canvas.height = 960;
-        _gradCache = null;
-        _mtCache.clear();
-        if (window._ornCache) window._ornCache = null;
-        markCstateDirty();
         lastDrawTime = 0;
         startDrawLoop();
         if (ctx) ctx.close().catch(() => {});
@@ -7117,144 +7108,10 @@
         isExporting = false;
         _stopProgressIv();
         stopDrawLoop();
-        // استعادة canvas لحجم المعاينة
-        canvas.width  = 540;
-        canvas.height = 960;
-        _gradCache = null;
-        _mtCache.clear();
-        if (window._ornCache) window._ornCache = null;
-        markCstateDirty();
         updateExportBtn(false);
         xHide();
         startDrawLoop();
         toast$("⏹ تم إيقاف التصدير");
-      }
-
-      // ══ تحميل صوت آية للتصدير — 3 مراحل ══
-      // المشكلة: everyayah.com يرفض fetch/XHR من JS (403)
-      // لكن <audio> يشغّله عادي لأن المتصفح يعامله كـ media request
-      // الحل: نشغّله في <audio> ونسجّله real-time بـ MediaRecorder
-
-      function _loadOneAyahBuf(url, expCtx) {
-        return new Promise(function(resolve) {
-
-          // المحاولة 1: XHR — يعمل لو الخادم يدعم CORS أو نفس الدومين
-          var xhr = new XMLHttpRequest();
-          xhr.open('GET', url, true);
-          xhr.responseType = 'arraybuffer';
-          xhr.timeout = 10000;
-          xhr.onload = function() {
-            if (xhr.status >= 200 && xhr.status < 300 && xhr.response && xhr.response.byteLength > 1000) {
-              expCtx.decodeAudioData(
-                xhr.response.slice(0),
-                function(buf) { resolve(buf); },
-                function() { _tryCapture(url, expCtx, resolve); }
-              );
-            } else {
-              _tryCapture(url, expCtx, resolve);
-            }
-          };
-          xhr.onerror = xhr.ontimeout = function() { _tryCapture(url, expCtx, resolve); };
-          try { xhr.send(); } catch(e) { _tryCapture(url, expCtx, resolve); }
-        });
-      }
-
-      // المحاولة 2+3: <audio> + AudioContext.createMediaElementSource
-      // نسجّل الصوت real-time أثناء تشغيل الـ audio element
-      function _tryCapture(url, expCtx, resolve) {
-        var audio = new Audio();
-        audio.crossOrigin = 'anonymous';
-        audio.preload = 'auto';
-
-        var captureCtx = null;
-        var rec = null;
-        var chunks = [];
-        var done = false;
-        var TIMEOUT = 30000; // 30s max
-
-        var timer = setTimeout(function() {
-          if (!done) { done = true; cleanup(); resolve(null); }
-        }, TIMEOUT);
-
-        function cleanup() {
-          clearTimeout(timer);
-          try { if (rec && rec.state !== 'inactive') rec.stop(); } catch(e) {}
-          try { audio.pause(); audio.src = ''; } catch(e) {}
-          try { if (captureCtx) captureCtx.close(); } catch(e) {}
-        }
-
-        audio.addEventListener('canplaythrough', function onReady() {
-          audio.removeEventListener('canplaythrough', onReady);
-          if (done) return;
-
-          try {
-            // AudioContext عادي (ليس Offline) لأن createMediaElementSource
-            // لا يعمل مع OfflineAudioContext
-            captureCtx = new (window.AudioContext || window.webkitAudioContext)();
-            var src = captureCtx.createMediaElementSource(audio);
-            var dest = captureCtx.createMediaStreamDestination();
-            src.connect(dest);
-            // connect للـ destination الأصلي أيضاً لتجنب الـ zero-output bug
-            src.connect(captureCtx.destination);
-
-            // اختر أفضل mimeType متاح
-            var mime = ['audio/webm;codecs=opus','audio/webm','audio/ogg']
-              .find(function(m){ try{ return MediaRecorder.isTypeSupported(m); }catch(e){ return false; } })
-              || 'audio/webm';
-
-            rec = new MediaRecorder(dest.stream, { mimeType: mime });
-            rec.ondataavailable = function(e) {
-              if (e.data && e.data.size > 0) chunks.push(e.data);
-            };
-            rec.onstop = function() {
-              if (done) return;
-              done = true;
-              var blob = new Blob(chunks, { type: mime });
-              if (blob.size < 500) { cleanup(); resolve(null); return; }
-              var fr = new FileReader();
-              fr.onload = function() {
-                expCtx.decodeAudioData(
-                  fr.result,
-                  function(buf) { cleanup(); resolve(buf); },
-                  function() { cleanup(); resolve(null); }
-                );
-              };
-              fr.onerror = function() { cleanup(); resolve(null); };
-              fr.readAsArrayBuffer(blob);
-            };
-
-            rec.start(200);
-
-            // استئناف AudioContext لو متعلق
-            if (captureCtx.state === 'suspended') captureCtx.resume();
-
-            audio.currentTime = 0;
-            audio.play().catch(function(e) {
-              // play() رُفض — نوقف
-              if (!done) { done = true; cleanup(); resolve(null); }
-            });
-
-            audio.onended = function() {
-              setTimeout(function() {
-                if (!done && rec && rec.state !== 'inactive') {
-                  rec.stop();
-                }
-              }, 300);
-            };
-
-          } catch(e) {
-            console.warn('[LOAD] capture failed:', e.message);
-            if (!done) { done = true; cleanup(); resolve(null); }
-          }
-        }, { once: true });
-
-        audio.addEventListener('error', function(e) {
-          console.warn('[LOAD] audio error:', url);
-          if (!done) { done = true; cleanup(); resolve(null); }
-        }, { once: true });
-
-        audio.src = url;
-        audio.load();
       }
 
       async function _loadData(expCtx, exportAyahs, sn) {
@@ -7267,8 +7124,12 @@
             const urls = ayahUrls(S.sh, sn, ayahN);
             let buf = null;
             for (const url of urls) {
-              buf = await _loadOneAyahBuf(url, expCtx);
-              if (buf) break;
+              try {
+                const r = await fetch(url, { mode: "cors" });
+                if (!r.ok) continue;
+                buf = await expCtx.decodeAudioData(await r.arrayBuffer());
+                break;
+              } catch (e) {}
             }
             if (!buf)
               throw Object.assign(new Error("فشل تحميل آية " + ayahN), {
@@ -7318,23 +7179,13 @@
 
         // الصورة تتحدد في drawFrameDirect حسب الوقت
 
-        // ── snapshot الصورة للـ canvas ──
+        // ── snapshot الصورة للـ canvas (صورة واحدة أو معاينة) ──
         if (!isExporting || !(_bgImages && _bgImages.length > 1)) {
           const bgEl = document.getElementById("bgMedia");
           if (bgEl && (bgEl.tagName === "IMG" || bgEl.tagName === "VIDEO")) {
             CSTATE.bgImage = bgEl;
             CSTATE.bgGradient = null;
             _gradCache = null;
-          } else {
-            // لو مفيش صورة، تأكد إن CSTATE محدث من syncCSTATE
-            markCstateDirty();
-          }
-        } else {
-          // slideshow mode: نتأكد إن _bgPreloaded محملة
-          if (_bgImages && _bgImages.length > 0 && !window._bgPreloaded) {
-            window._bgPreloaded = _bgImages.map(function(src) {
-              var img = new Image(); img.src = src; return img;
-            });
           }
         }
 
@@ -7515,13 +7366,11 @@
               } catch (e) {}
 
               xShow(i + 1, timings.length, "آية " + arN(ayahN));
-              // استرجع chunks من _masFullTimings لو موجودة — للمزامنة الصحيحة
-              const _masT = window._masFullTimings && window._masFullTimings[ayahN];
               return {
                 ayahN,
                 buf,
                 arText,
-                wordList: _masT && _masT.chunks ? _masT.chunks.map(ch => ch.words).flat() : null,
+                wordList: null,
                 ref: "﴿ " + (S.surah.ar || "") + " : " + arN(ayahN) + " ﴾",
                 segs: null,
               };
@@ -7556,19 +7405,13 @@
           const _selFps = document.getElementById("s-fps")
             ? parseInt(document.getElementById("s-fps").value)
             : 30;
-          // الـ canvas ثابت 540×960 للعرض، لكن الـ preset يحدد دقة التصدير الفعلية
           const qp = {
             ..._baseQp,
+            w: canvas.width,
+            h: canvas.height,
             bitrate: _selBitrate,
             fps: _selFps,
           };
-          // resize canvas لدقة التصدير
-          canvas.width  = qp.w;
-          canvas.height = qp.h;
-          _gradCache = null;
-          _mtCache.clear();
-          if (window._ornCache) window._ornCache = null;
-          markCstateDirty();
 
           _gradCache = null;
           _mtCache.clear();
@@ -7769,15 +7612,14 @@
           : 30;
         const qp = {
           ..._baseQp,
+          w: canvas.width,
+          h: canvas.height,
           bitrate: _selBitrate,
           fps: _selFps,
         };
-        // resize canvas لدقة التصدير الفعلية
-        canvas.width  = qp.w;
-        canvas.height = qp.h;
+        // لا نغيّر canvas.width / canvas.height — نصدّر بالحجم الحالي
         _gradCache = null;
         _mtCache.clear();
-        if (window._ornCache) window._ornCache = null;
         stopDrawLoop();
         isExporting = true;
         window._dbgLogged = false;
@@ -7891,7 +7733,7 @@
           bitrate: 96000,
         });
 
-        // بناء audio arrays — SR الحقيقي من الـ buffers مع ثانيتين padding
+        // بناء audio arrays — resample إلى SR=44100 بـ linear interpolation
         const actualSR = buffers[0].sampleRate;
         const actualTotalSamp =
           buffers.reduce((s, b) => s + b.length, 0) + Math.ceil(actualSR * 0.5);
@@ -7908,10 +7750,7 @@
           );
           aOff += buf.length;
         }
-        // نعمل resample لـ 44100 لو الـ buffer بـ sampleRate مختلف
-        let finalL = aL,
-          finalR = aR,
-          totalSamp = actualTotalSamp;
+        let finalL = aL, finalR = aR, totalSamp = actualTotalSamp;
         if (actualSR !== SR) {
           const ratio = SR / actualSR;
           totalSamp = Math.round(actualTotalSamp * ratio);
@@ -7927,9 +7766,10 @@
           }
         }
 
-        let globalFrame = 0,
-          audioSent = 0;
-        const sampPerFrame = Math.round(SR / FPS);
+        let globalFrame = 0;
+        // audioSent يُحسب من timestamp الفيديو — يمنع تراكم الـ drift
+        // بدل round(SR/FPS) * frame_count (يخطئ مع FPS غير قسيم لـ SR)
+        const sampPerFrame = Math.round(SR / FPS); // للـ chunk size فقط
 
         // preload كل صور الخلفية قبل لوب التصدير
         if (_bgImages && _bgImages.length > 1) await _bgPreloadAll();
@@ -7957,15 +7797,18 @@
             const tm = _masGetTiming(vd.ayahN);
             if (tm && tm.chunks && tm.chunks.length > 1) {
               // ── استخدم توقيتات MAS الفعلية ──
-              // buf يبدأ من 0 (مقطوع من sliceBuffer)، لذا نحسب relative لـ tm.start
-              const ayahStart = typeof tm.start === 'number' ? tm.start : 0;
-              const ayahDur = buf.duration; // المدة الفعلية للـ buffer المقطوع
+              const ayahStart = tm.start;
+              const ayahEnd =
+                tm.end !== null && tm.end > ayahStart
+                  ? tm.end
+                  : ayahStart + buf.duration;
+              const ayahDur = Math.max(0.001, ayahEnd - ayahStart);
               const totalFrames = Math.ceil(buf.duration * FPS);
               for (let ci = 1; ci < tm.chunks.length; ci++) {
                 const ch = tm.chunks[ci];
                 if (!ch || ch.start === null) continue;
                 const chRelTime = Math.max(0, ch.start - ayahStart);
-                const chRelPct = Math.min(chRelTime / Math.max(0.001, ayahDur), 0.99);
+                const chRelPct = Math.min(chRelTime / ayahDur, 0.99);
                 const frame = Math.max(
                   1,
                   Math.min(Math.round(chRelPct * totalFrames), totalFrames - 1),
@@ -7997,26 +7840,32 @@
 
             hlActive = _drawVerseFrame(vd, f, msPerFrame, hlActive);
 
-            // audio chunk لهذا الـ frame
-            if (audioSent < totalSamp) {
-              const aLen = Math.min(sampPerFrame, totalSamp - audioSent);
-              // interleaved f32: L0 R0 L1 R1 ... (مدعوم أوسع من planar)
-              const interleaved = new Float32Array(aLen * 2);
-              for (let s = 0; s < aLen; s++) {
-                interleaved[s * 2]     = finalL[audioSent + s];
-                interleaved[s * 2 + 1] = finalR[audioSent + s];
+            // audio chunk — محاذاة بالـ timestamp لمنع drift تراكمي
+            {
+              // الـ offset الصح للصوت = timestamp الفيديو بالثواني * SR
+              const audioOffset = Math.round((globalFrame / FPS) * SR);
+              const nextOffset  = Math.min(
+                Math.round(((globalFrame + 1) / FPS) * SR),
+                totalSamp
+              );
+              const aLen = Math.max(0, nextOffset - audioOffset);
+              if (aLen > 0 && audioOffset < totalSamp) {
+                const chunkL = finalL.slice(audioOffset, audioOffset + aLen);
+                const chunkR = finalR.slice(audioOffset, audioOffset + aLen);
+                const planar = new Float32Array(aLen * 2);
+                planar.set(chunkL, 0);
+                planar.set(chunkR, aLen);
+                const ad = new AudioData({
+                  format: "f32-planar",
+                  sampleRate: SR,
+                  numberOfFrames: aLen,
+                  numberOfChannels: 2,
+                  timestamp: Math.round((audioOffset / SR) * 1e6),
+                  data: planar,
+                });
+                audioEnc.encode(ad);
+                ad.close();
               }
-              const ad = new AudioData({
-                format: "f32",
-                sampleRate: SR,
-                numberOfFrames: aLen,
-                numberOfChannels: 2,
-                timestamp: Math.round((audioSent / SR) * 1e6),
-                data: interleaved.buffer,
-              });
-              audioEnc.encode(ad);
-              ad.close();
-              audioSent += aLen;
             }
 
             // video frame
@@ -8031,11 +7880,9 @@
 
             _setProgress(_expElapsedBefore + f / FPS);
 
-            // Queue Drain — ننتظر فقط لو الـ queue ممتلئ فعلاً
             while (videoEnc.encodeQueueSize > 20) {
               await new Promise((r) => setTimeout(r, 1));
             }
-            // yield للـ UI كل 30 frame (بدل 4) — نقلل تدخل المتصفح في الـ canvas
             if (f % 30 === 0) await new Promise((r) => setTimeout(r, 0));
           }
 
@@ -8054,20 +7901,27 @@
           const extraFrames = Math.ceil(FPS * 0.5); // 0.5s tail
           for (let f = 0; f < extraFrames; f++) {
             if (_expAbort || vEncErr) break;
-            if (audioSent < totalSamp) {
-              const aLen = Math.min(sampPerFrame, totalSamp - audioSent);
-              const silBuf = new Float32Array(aLen * 2); // zeros = silence
-              const ad = new AudioData({
-                format: "f32",
-                sampleRate: SR,
-                numberOfFrames: aLen,
-                numberOfChannels: 2,
-                timestamp: Math.round((audioSent / SR) * 1e6),
-                data: silBuf.buffer,
-              });
-              audioEnc.encode(ad);
-              ad.close();
-              audioSent += aLen;
+            {
+              const audioOffset = Math.round((globalFrame / FPS) * SR);
+              const nextOffset  = Math.min(
+                Math.round(((globalFrame + 1) / FPS) * SR),
+                totalSamp
+              );
+              const aLen = Math.max(0, nextOffset - audioOffset);
+              if (aLen > 0 && audioOffset < totalSamp) {
+                // silence للـ tail
+                const planar = new Float32Array(aLen * 2);
+                const ad = new AudioData({
+                  format: "f32-planar",
+                  sampleRate: SR,
+                  numberOfFrames: aLen,
+                  numberOfChannels: 2,
+                  timestamp: Math.round((audioOffset / SR) * 1e6),
+                  data: planar,
+                });
+                audioEnc.encode(ad);
+                ad.close();
+              }
             }
             const ts = globalFrame * frameDurUs;
             const vf = new VideoFrame(canvas, {
@@ -8180,15 +8034,18 @@
             const tm = _masGetTiming(vd.ayahN);
             if (tm && tm.chunks && tm.chunks.length > 1) {
               // ── استخدم توقيتات MAS الفعلية ──
-              // buf يبدأ من 0 (مقطوع من sliceBuffer)، لذا نحسب relative لـ tm.start
-              const ayahStart = typeof tm.start === 'number' ? tm.start : 0;
-              const ayahDur = buf.duration; // المدة الفعلية للـ buffer المقطوع
+              const ayahStart = tm.start;
+              const ayahEnd =
+                tm.end !== null && tm.end > ayahStart
+                  ? tm.end
+                  : ayahStart + buf.duration;
+              const ayahDur = Math.max(0.001, ayahEnd - ayahStart);
               const totalFrames = Math.ceil(buf.duration * FPS);
               for (let ci = 1; ci < tm.chunks.length; ci++) {
                 const ch = tm.chunks[ci];
                 if (!ch || ch.start === null) continue;
                 const chRelTime = Math.max(0, ch.start - ayahStart);
-                const chRelPct = Math.min(chRelTime / Math.max(0.001, ayahDur), 0.99);
+                const chRelPct = Math.min(chRelTime / ayahDur, 0.99);
                 const frame = Math.max(
                   1,
                   Math.min(Math.round(chRelPct * totalFrames), totalFrames - 1),
@@ -11217,10 +11074,8 @@
       /* Service Worker */
       window.addEventListener("load", () => {
         if (!("serviceWorker" in navigator)) return;
-        // على GitHub Pages الـ path هو /repo-name/sw.js
-        const _swBase = location.pathname.replace(/\/[^\/]*$/, '/') || '/';
         navigator.serviceWorker
-          .register(_swBase + 'sw.js', { scope: _swBase })
+          .register("/sw.js", { scope: "/" })
           .then((reg) => {
             console.log("[SW] registered, scope:", reg.scope);
             reg.addEventListener("updatefound", () => {
