@@ -6685,6 +6685,13 @@
         xHide();
         _stopProgressIv();
         stopDrawLoop();
+        // استعادة canvas لحجم المعاينة 540×960
+        canvas.width  = 540;
+        canvas.height = 960;
+        _gradCache = null;
+        _mtCache.clear();
+        if (window._ornCache) window._ornCache = null;
+        markCstateDirty();
         lastDrawTime = 0;
         startDrawLoop();
         if (ctx) ctx.close().catch(() => {});
@@ -7102,6 +7109,13 @@
         isExporting = false;
         _stopProgressIv();
         stopDrawLoop();
+        // استعادة canvas لحجم المعاينة
+        canvas.width  = 540;
+        canvas.height = 960;
+        _gradCache = null;
+        _mtCache.clear();
+        if (window._ornCache) window._ornCache = null;
+        markCstateDirty();
         updateExportBtn(false);
         xHide();
         startDrawLoop();
@@ -7173,13 +7187,23 @@
 
         // الصورة تتحدد في drawFrameDirect حسب الوقت
 
-        // ── snapshot الصورة للـ canvas (صورة واحدة أو معاينة) ──
+        // ── snapshot الصورة للـ canvas ──
         if (!isExporting || !(_bgImages && _bgImages.length > 1)) {
           const bgEl = document.getElementById("bgMedia");
           if (bgEl && (bgEl.tagName === "IMG" || bgEl.tagName === "VIDEO")) {
             CSTATE.bgImage = bgEl;
             CSTATE.bgGradient = null;
             _gradCache = null;
+          } else {
+            // لو مفيش صورة، تأكد إن CSTATE محدث من syncCSTATE
+            markCstateDirty();
+          }
+        } else {
+          // slideshow mode: نتأكد إن _bgPreloaded محملة
+          if (_bgImages && _bgImages.length > 0 && !window._bgPreloaded) {
+            window._bgPreloaded = _bgImages.map(function(src) {
+              var img = new Image(); img.src = src; return img;
+            });
           }
         }
 
@@ -7360,11 +7384,13 @@
               } catch (e) {}
 
               xShow(i + 1, timings.length, "آية " + arN(ayahN));
+              // استرجع chunks من _masFullTimings لو موجودة — للمزامنة الصحيحة
+              const _masT = window._masFullTimings && window._masFullTimings[ayahN];
               return {
                 ayahN,
                 buf,
                 arText,
-                wordList: null,
+                wordList: _masT && _masT.chunks ? _masT.chunks.map(ch => ch.words).flat() : null,
                 ref: "﴿ " + (S.surah.ar || "") + " : " + arN(ayahN) + " ﴾",
                 segs: null,
               };
@@ -7399,13 +7425,19 @@
           const _selFps = document.getElementById("s-fps")
             ? parseInt(document.getElementById("s-fps").value)
             : 30;
+          // الـ canvas ثابت 540×960 للعرض، لكن الـ preset يحدد دقة التصدير الفعلية
           const qp = {
             ..._baseQp,
-            w: canvas.width,
-            h: canvas.height,
             bitrate: _selBitrate,
             fps: _selFps,
           };
+          // resize canvas لدقة التصدير
+          canvas.width  = qp.w;
+          canvas.height = qp.h;
+          _gradCache = null;
+          _mtCache.clear();
+          if (window._ornCache) window._ornCache = null;
+          markCstateDirty();
 
           _gradCache = null;
           _mtCache.clear();
@@ -7606,14 +7638,15 @@
           : 30;
         const qp = {
           ..._baseQp,
-          w: canvas.width,
-          h: canvas.height,
           bitrate: _selBitrate,
           fps: _selFps,
         };
-        // لا نغيّر canvas.width / canvas.height — نصدّر بالحجم الحالي
+        // resize canvas لدقة التصدير الفعلية
+        canvas.width  = qp.w;
+        canvas.height = qp.h;
         _gradCache = null;
         _mtCache.clear();
+        if (window._ornCache) window._ornCache = null;
         stopDrawLoop();
         isExporting = true;
         window._dbgLogged = false;
@@ -7790,18 +7823,15 @@
             const tm = _masGetTiming(vd.ayahN);
             if (tm && tm.chunks && tm.chunks.length > 1) {
               // ── استخدم توقيتات MAS الفعلية ──
-              const ayahStart = tm.start;
-              const ayahEnd =
-                tm.end !== null && tm.end > ayahStart
-                  ? tm.end
-                  : ayahStart + buf.duration;
-              const ayahDur = Math.max(0.001, ayahEnd - ayahStart);
+              // buf يبدأ من 0 (مقطوع من sliceBuffer)، لذا نحسب relative لـ tm.start
+              const ayahStart = typeof tm.start === 'number' ? tm.start : 0;
+              const ayahDur = buf.duration; // المدة الفعلية للـ buffer المقطوع
               const totalFrames = Math.ceil(buf.duration * FPS);
               for (let ci = 1; ci < tm.chunks.length; ci++) {
                 const ch = tm.chunks[ci];
                 if (!ch || ch.start === null) continue;
                 const chRelTime = Math.max(0, ch.start - ayahStart);
-                const chRelPct = Math.min(chRelTime / ayahDur, 0.99);
+                const chRelPct = Math.min(chRelTime / Math.max(0.001, ayahDur), 0.99);
                 const frame = Math.max(
                   1,
                   Math.min(Math.round(chRelPct * totalFrames), totalFrames - 1),
@@ -7836,9 +7866,6 @@
             // audio chunk لهذا الـ frame
             if (audioSent < totalSamp) {
               const aLen = Math.min(sampPerFrame, totalSamp - audioSent);
-              const planar = new Float32Array(aLen * 2);
-              planar.set(finalL.subarray(audioSent, audioSent + aLen), 0);
-              planar.set(finalR.subarray(audioSent, audioSent + aLen), aLen);
               audioEnc.encode(
                 new AudioData({
                   format: "f32-planar",
@@ -7846,7 +7873,10 @@
                   numberOfFrames: aLen,
                   numberOfChannels: 2,
                   timestamp: Math.round((audioSent / SR) * 1e6),
-                  data: planar,
+                  data: [
+                    finalL.subarray(audioSent, audioSent + aLen),
+                    finalR.subarray(audioSent, audioSent + aLen),
+                  ],
                 }),
               );
               audioSent += aLen;
@@ -7888,7 +7918,6 @@
             if (_expAbort || vEncErr) break;
             if (audioSent < totalSamp) {
               const aLen = Math.min(sampPerFrame, totalSamp - audioSent);
-              const planar = new Float32Array(aLen * 2);
               audioEnc.encode(
                 new AudioData({
                   format: "f32-planar",
@@ -7896,7 +7925,10 @@
                   numberOfFrames: aLen,
                   numberOfChannels: 2,
                   timestamp: Math.round((audioSent / SR) * 1e6),
-                  data: planar,
+                  data: [
+                    new Float32Array(aLen),
+                    new Float32Array(aLen),
+                  ],
                 }),
               );
               audioSent += aLen;
@@ -8013,18 +8045,15 @@
             const tm = _masGetTiming(vd.ayahN);
             if (tm && tm.chunks && tm.chunks.length > 1) {
               // ── استخدم توقيتات MAS الفعلية ──
-              const ayahStart = tm.start;
-              const ayahEnd =
-                tm.end !== null && tm.end > ayahStart
-                  ? tm.end
-                  : ayahStart + buf.duration;
-              const ayahDur = Math.max(0.001, ayahEnd - ayahStart);
+              // buf يبدأ من 0 (مقطوع من sliceBuffer)، لذا نحسب relative لـ tm.start
+              const ayahStart = typeof tm.start === 'number' ? tm.start : 0;
+              const ayahDur = buf.duration; // المدة الفعلية للـ buffer المقطوع
               const totalFrames = Math.ceil(buf.duration * FPS);
               for (let ci = 1; ci < tm.chunks.length; ci++) {
                 const ch = tm.chunks[ci];
                 if (!ch || ch.start === null) continue;
                 const chRelTime = Math.max(0, ch.start - ayahStart);
-                const chRelPct = Math.min(chRelTime / ayahDur, 0.99);
+                const chRelPct = Math.min(chRelTime / Math.max(0.001, ayahDur), 0.99);
                 const frame = Math.max(
                   1,
                   Math.min(Math.round(chRelPct * totalFrames), totalFrames - 1),
