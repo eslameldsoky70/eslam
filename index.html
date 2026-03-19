@@ -6594,18 +6594,24 @@
         }
       }
 
+      let _drawLoopGen = 0;
       function startDrawLoop() {
         if (drawLoopActive) return;
         drawLoopActive = true;
         lastDrawTime = 0;
+        const myGen = ++_drawLoopGen;
         function loop(ts) {
-          if (!drawLoopActive) return;
-          const ready = isExporting
-            ? true // تصدير: ارسم كل frame بدون قيود
-            : _cstateDirty && ts - lastDrawTime >= 50; // معاينة: فقط لما يتغيّر شيء
+          // لو stopDrawLoop اتستدعى وبدأت generation جديدة — قف
+          if (!drawLoopActive || myGen !== _drawLoopGen) return;
+          // أثناء التصدير: الـ export loop هو اللي بيرسم — draw loop بيوقف
+          if (isExporting) {
+            drawLoopActive = false;
+            return;
+          }
+          const ready = _cstateDirty && ts - lastDrawTime >= 50;
           if (ready) {
             lastDrawTime = ts;
-            _cstateDirty = true; // أجبر syncCSTATE على القراءة دائماً أثناء التصدير
+            _cstateDirty = true;
             syncCSTATE();
             drawFrameDirect();
           }
@@ -6615,6 +6621,8 @@
       }
       function stopDrawLoop() {
         drawLoopActive = false;
+        // نزيل الـ rAF المعلق — نستخدم counter للتأكد إن draw loop توقف فعلاً
+        _drawLoopGen = (_drawLoopGen || 0) + 1;
       }
 
       let exportRecorder = null,
@@ -8023,11 +8031,12 @@
 
             _setProgress(_expElapsedBefore + f / FPS);
 
-            // ← Queue Drain Guard: ننتظر لو الـ queue امتلأ (حد 6 بدل 10)
-            while (videoEnc.encodeQueueSize > 6) {
-              await new Promise((r) => setTimeout(r, 4));
+            // Queue Drain — ننتظر فقط لو الـ queue ممتلئ فعلاً
+            while (videoEnc.encodeQueueSize > 20) {
+              await new Promise((r) => setTimeout(r, 1));
             }
-            if (f % 4 === 0) await new Promise((r) => setTimeout(r, 0));
+            // yield للـ UI كل 30 frame (بدل 4) — نقلل تدخل المتصفح في الـ canvas
+            if (f % 30 === 0) await new Promise((r) => setTimeout(r, 0));
           }
 
           if (hlActive >= 0) {
@@ -8068,9 +8077,8 @@
             videoEnc.encode(vf, { keyFrame: false });
             vf.close();
             globalFrame++;
-            while (videoEnc.encodeQueueSize > 6)
-              await new Promise((r) => setTimeout(r, 4));
-            if (f % 4 === 0) await new Promise((r) => setTimeout(r, 0));
+            while (videoEnc.encodeQueueSize > 20)
+              await new Promise((r) => setTimeout(r, 1));
           }
         }
 
