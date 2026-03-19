@@ -45,9 +45,9 @@
       window._mp4MuxerLoaded = false;
       (function () {
         const SOURCES = [
-          "/libs/mp4-muxer.js", // محلي
           "https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.js", // CDN 1
-          "https://unpkg.com/mp4-muxer@5/build/mp4-muxer.js", // CDN 2
+          "https://unpkg.com/mp4-muxer@5/build/mp4-muxer.js",            // CDN 2
+          "/libs/mp4-muxer.js",                                           // محلي (fallback)
         ];
         let idx = 0;
         function tryNext() {
@@ -7122,83 +7122,131 @@
         toast$("⏹ تم إيقاف التصدير");
       }
 
-      // تحميل صوت آية واحدة — XHR → OfflineAudioContext → MediaRecorder
+      // ══ تحميل صوت آية للتصدير — 3 مراحل ══
+      // المشكلة: everyayah.com يرفض fetch/XHR من JS (403)
+      // لكن <audio> يشغّله عادي لأن المتصفح يعامله كـ media request
+      // الحل: نشغّله في <audio> ونسجّله real-time بـ MediaRecorder
+
       function _loadOneAyahBuf(url, expCtx) {
         return new Promise(function(resolve) {
-          // محاولة 1: XHR
+
+          // المحاولة 1: XHR — يعمل لو الخادم يدعم CORS أو نفس الدومين
           var xhr = new XMLHttpRequest();
           xhr.open('GET', url, true);
           xhr.responseType = 'arraybuffer';
-          xhr.timeout = 15000;
+          xhr.timeout = 10000;
           xhr.onload = function() {
-            if (xhr.status >= 200 && xhr.status < 300 && xhr.response) {
+            if (xhr.status >= 200 && xhr.status < 300 && xhr.response && xhr.response.byteLength > 1000) {
               expCtx.decodeAudioData(
-                xhr.response,
+                xhr.response.slice(0),
                 function(buf) { resolve(buf); },
-                function() { _tryOffline(url, expCtx, resolve); }
+                function() { _tryCapture(url, expCtx, resolve); }
               );
-            } else { _tryOffline(url, expCtx, resolve); }
+            } else {
+              _tryCapture(url, expCtx, resolve);
+            }
           };
-          xhr.onerror = xhr.ontimeout = function() { _tryOffline(url, expCtx, resolve); };
-          try { xhr.send(); } catch(e) { _tryOffline(url, expCtx, resolve); }
+          xhr.onerror = xhr.ontimeout = function() { _tryCapture(url, expCtx, resolve); };
+          try { xhr.send(); } catch(e) { _tryCapture(url, expCtx, resolve); }
         });
       }
-      function _tryOffline(url, expCtx, resolve) {
-        try {
-          var tmp = new Audio();
-          tmp.crossOrigin = 'anonymous';
-          var timer = setTimeout(function() { tmp.src=''; _tryRecorder(url, expCtx, resolve); }, 18000);
-          tmp.addEventListener('canplaythrough', function onR() {
-            tmp.removeEventListener('canplaythrough', onR);
-            var dur = tmp.duration;
-            if (!dur || !isFinite(dur)) { clearTimeout(timer); tmp.src=''; _tryRecorder(url, expCtx, resolve); return; }
-            var SR = expCtx.sampleRate || 44100;
-            var off;
-            try { off = new OfflineAudioContext(2, Math.ceil(dur * SR), SR); }
-            catch(e) { clearTimeout(timer); tmp.src=''; resolve(null); return; }
-            var ms;
-            try { ms = off.createMediaElementSource(tmp); }
-            catch(e) { clearTimeout(timer); tmp.src=''; _tryRecorder(url, expCtx, resolve); return; }
-            ms.connect(off.destination);
-            off.startRendering()
-              .then(function(buf) { clearTimeout(timer); tmp.src=''; resolve(buf); })
-              .catch(function() { clearTimeout(timer); tmp.src=''; resolve(null); });
-            tmp.currentTime = 0;
-            tmp.play().catch(function(){});
-          }, {once:true});
-          tmp.addEventListener('error', function() { clearTimeout(timer); _tryRecorder(url, expCtx, resolve); }, {once:true});
-          tmp.src = url; tmp.load();
-        } catch(e) { _tryRecorder(url, expCtx, resolve); }
-      }
-      function _tryRecorder(url, expCtx, resolve) {
-        try {
-          var ra = new Audio(); ra.crossOrigin='anonymous';
-          var timer = setTimeout(function(){ ra.src=''; resolve(null); }, 25000);
-          var chunks=[], rec;
-          ra.addEventListener('canplaythrough', function onR() {
-            ra.removeEventListener('canplaythrough', onR);
-            try {
-              var dc = new (window.AudioContext||window.webkitAudioContext)();
-              var s2 = dc.createMediaElementSource(ra);
-              var d2 = dc.createMediaStreamDestination();
-              s2.connect(d2);
-              rec = new MediaRecorder(d2.stream, {mimeType:'audio/webm'});
-              rec.ondataavailable = function(e){ if(e.data&&e.data.size>0) chunks.push(e.data); };
-              rec.onstop = function(){
-                var fr = new FileReader();
-                fr.onload = function(){
-                  expCtx.decodeAudioData(fr.result, function(buf){ clearTimeout(timer); resolve(buf); }, function(){ clearTimeout(timer); resolve(null); });
-                };
-                fr.readAsArrayBuffer(new Blob(chunks,{type:'audio/webm'}));
+
+      // المحاولة 2+3: <audio> + AudioContext.createMediaElementSource
+      // نسجّل الصوت real-time أثناء تشغيل الـ audio element
+      function _tryCapture(url, expCtx, resolve) {
+        var audio = new Audio();
+        audio.crossOrigin = 'anonymous';
+        audio.preload = 'auto';
+
+        var captureCtx = null;
+        var rec = null;
+        var chunks = [];
+        var done = false;
+        var TIMEOUT = 30000; // 30s max
+
+        var timer = setTimeout(function() {
+          if (!done) { done = true; cleanup(); resolve(null); }
+        }, TIMEOUT);
+
+        function cleanup() {
+          clearTimeout(timer);
+          try { if (rec && rec.state !== 'inactive') rec.stop(); } catch(e) {}
+          try { audio.pause(); audio.src = ''; } catch(e) {}
+          try { if (captureCtx) captureCtx.close(); } catch(e) {}
+        }
+
+        audio.addEventListener('canplaythrough', function onReady() {
+          audio.removeEventListener('canplaythrough', onReady);
+          if (done) return;
+
+          try {
+            // AudioContext عادي (ليس Offline) لأن createMediaElementSource
+            // لا يعمل مع OfflineAudioContext
+            captureCtx = new (window.AudioContext || window.webkitAudioContext)();
+            var src = captureCtx.createMediaElementSource(audio);
+            var dest = captureCtx.createMediaStreamDestination();
+            src.connect(dest);
+            // connect للـ destination الأصلي أيضاً لتجنب الـ zero-output bug
+            src.connect(captureCtx.destination);
+
+            // اختر أفضل mimeType متاح
+            var mime = ['audio/webm;codecs=opus','audio/webm','audio/ogg']
+              .find(function(m){ try{ return MediaRecorder.isTypeSupported(m); }catch(e){ return false; } })
+              || 'audio/webm';
+
+            rec = new MediaRecorder(dest.stream, { mimeType: mime });
+            rec.ondataavailable = function(e) {
+              if (e.data && e.data.size > 0) chunks.push(e.data);
+            };
+            rec.onstop = function() {
+              if (done) return;
+              done = true;
+              var blob = new Blob(chunks, { type: mime });
+              if (blob.size < 500) { cleanup(); resolve(null); return; }
+              var fr = new FileReader();
+              fr.onload = function() {
+                expCtx.decodeAudioData(
+                  fr.result,
+                  function(buf) { cleanup(); resolve(buf); },
+                  function() { cleanup(); resolve(null); }
+                );
               };
-              rec.start(100);
-              ra.currentTime=0; ra.play().catch(function(){});
-              ra.onended = function(){ setTimeout(function(){ try{rec.stop();}catch(e){} }, 200); };
-            } catch(e){ clearTimeout(timer); resolve(null); }
-          }, {once:true});
-          ra.addEventListener('error', function(){ clearTimeout(timer); resolve(null); }, {once:true});
-          ra.src=url; ra.load();
-        } catch(e){ resolve(null); }
+              fr.onerror = function() { cleanup(); resolve(null); };
+              fr.readAsArrayBuffer(blob);
+            };
+
+            rec.start(200);
+
+            // استئناف AudioContext لو متعلق
+            if (captureCtx.state === 'suspended') captureCtx.resume();
+
+            audio.currentTime = 0;
+            audio.play().catch(function(e) {
+              // play() رُفض — نوقف
+              if (!done) { done = true; cleanup(); resolve(null); }
+            });
+
+            audio.onended = function() {
+              setTimeout(function() {
+                if (!done && rec && rec.state !== 'inactive') {
+                  rec.stop();
+                }
+              }, 300);
+            };
+
+          } catch(e) {
+            console.warn('[LOAD] capture failed:', e.message);
+            if (!done) { done = true; cleanup(); resolve(null); }
+          }
+        }, { once: true });
+
+        audio.addEventListener('error', function(e) {
+          console.warn('[LOAD] audio error:', url);
+          if (!done) { done = true; cleanup(); resolve(null); }
+        }, { once: true });
+
+        audio.src = url;
+        audio.load();
       }
 
       async function _loadData(expCtx, exportAyahs, sn) {
@@ -7944,19 +7992,22 @@
             // audio chunk لهذا الـ frame
             if (audioSent < totalSamp) {
               const aLen = Math.min(sampPerFrame, totalSamp - audioSent);
-              audioEnc.encode(
-                new AudioData({
-                  format: "f32-planar",
-                  sampleRate: SR,
-                  numberOfFrames: aLen,
-                  numberOfChannels: 2,
-                  timestamp: Math.round((audioSent / SR) * 1e6),
-                  data: [
-                    finalL.subarray(audioSent, audioSent + aLen),
-                    finalR.subarray(audioSent, audioSent + aLen),
-                  ],
-                }),
-              );
+              // interleaved f32: L0 R0 L1 R1 ... (مدعوم أوسع من planar)
+              const interleaved = new Float32Array(aLen * 2);
+              for (let s = 0; s < aLen; s++) {
+                interleaved[s * 2]     = finalL[audioSent + s];
+                interleaved[s * 2 + 1] = finalR[audioSent + s];
+              }
+              const ad = new AudioData({
+                format: "f32",
+                sampleRate: SR,
+                numberOfFrames: aLen,
+                numberOfChannels: 2,
+                timestamp: Math.round((audioSent / SR) * 1e6),
+                data: interleaved.buffer,
+              });
+              audioEnc.encode(ad);
+              ad.close();
               audioSent += aLen;
             }
 
@@ -7996,19 +8047,17 @@
             if (_expAbort || vEncErr) break;
             if (audioSent < totalSamp) {
               const aLen = Math.min(sampPerFrame, totalSamp - audioSent);
-              audioEnc.encode(
-                new AudioData({
-                  format: "f32-planar",
-                  sampleRate: SR,
-                  numberOfFrames: aLen,
-                  numberOfChannels: 2,
-                  timestamp: Math.round((audioSent / SR) * 1e6),
-                  data: [
-                    new Float32Array(aLen),
-                    new Float32Array(aLen),
-                  ],
-                }),
-              );
+              const silBuf = new Float32Array(aLen * 2); // zeros = silence
+              const ad = new AudioData({
+                format: "f32",
+                sampleRate: SR,
+                numberOfFrames: aLen,
+                numberOfChannels: 2,
+                timestamp: Math.round((audioSent / SR) * 1e6),
+                data: silBuf.buffer,
+              });
+              audioEnc.encode(ad);
+              ad.close();
               audioSent += aLen;
             }
             const ts = globalFrame * frameDurUs;
@@ -11160,8 +11209,10 @@
       /* Service Worker */
       window.addEventListener("load", () => {
         if (!("serviceWorker" in navigator)) return;
+        // على GitHub Pages الـ path هو /repo-name/sw.js
+        const _swBase = location.pathname.replace(/\/[^\/]*$/, '/') || '/';
         navigator.serviceWorker
-          .register("/sw.js", { scope: "/" })
+          .register(_swBase + 'sw.js', { scope: _swBase })
           .then((reg) => {
             console.log("[SW] registered, scope:", reg.scope);
             reg.addEventListener("updatefound", () => {
