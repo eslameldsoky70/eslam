@@ -19244,53 +19244,70 @@ If you want to offset all timestamps of a track such that the first one is zero,
           "https://cdn.islamic.network/quran/audio/128/ar.alafasy/255.mp3"
         ];
 
+        /* مساعد: تنفيذ promise مع timeout ← يرجع null لو تجاوز الوقت */
+        function _athkRace(promise, ms) {
+          return Promise.race([
+            promise,
+            new Promise(function(res) { setTimeout(function() { res(null); }, ms); })
+          ]);
+        }
+
         async function _athkLoadAudio(durSec) {
           var SR = 44100;
           var ac = null;
           try {
             ac = new (window.AudioContext || window.webkitAudioContext)();
+            ac.resume().catch(function(){});
             var buf = null;
 
             if (window._casAudioFile) {
               // 1. صوت مخصص مرفوع من المستخدم
               var ab = await window._casAudioFile.arrayBuffer();
-              buf = await ac.decodeAudioData(ab);
+              buf = await _athkRace(
+                new Promise(function(res, rej) { ac.decodeAudioData(ab, res, rej); }),
+                8000
+              );
             } else {
-              // 2. آية الكرسي تلقائياً من CDN
+              // 2. آية الكرسي تلقائياً من CDN (timeout 6 ثواني لكل محاولة)
               for (var ui = 0; ui < _ATHK_AUDIO_URLS.length; ui++) {
                 try {
-                  var resp = await fetch(_ATHK_AUDIO_URLS[ui]);
+                  var ctrl = new AbortController();
+                  var tid = setTimeout(function() { ctrl.abort(); }, 6000);
+                  var resp = await fetch(_ATHK_AUDIO_URLS[ui], { signal: ctrl.signal });
+                  clearTimeout(tid);
                   if (!resp.ok) continue;
-                  var ab2 = await resp.arrayBuffer();
-                  buf = await ac.decodeAudioData(ab2);
-                  break;
+                  var ab2 = await _athkRace(resp.arrayBuffer(), 8000);
+                  if (!ab2) continue;
+                  buf = await _athkRace(
+                    new Promise(function(res, rej) { ac.decodeAudioData(ab2, res, rej); }),
+                    5000
+                  );
+                  if (buf) break;
                 } catch(fe) { continue; }
               }
             }
 
-            if (!buf) { if (ac) ac.close(); return null; }
-            ac.close();
+            if (!buf) { try { ac.close(); } catch(x){} return null; }
+            try { ac.close(); } catch(x){}
 
             var total = Math.ceil(durSec * SR);
             var L = new Float32Array(total), R = new Float32Array(total);
             var srcL = buf.getChannelData(0);
             var srcR = buf.numberOfChannels > 1 ? buf.getChannelData(1) : srcL;
 
-            // حلقة تكرار لو الصوت أقصر من مدة الفيديو
             for (var off = 0; off < total; off += buf.length) {
               var cp = Math.min(buf.length, total - off);
               L.set(srcL.subarray(0, cp), off);
               R.set(srcR.subarray(0, cp), off);
             }
 
-            // خفّف الصوت لو خلفية تلقائية (60%)
             if (!window._casAudioFile) {
-              for (var si = 0; si < total; si++) { L[si] *= 0.6; R[si] *= 0.6; }
+              for (var si2 = 0; si2 < total; si2++) { L[si2] *= 0.6; R[si2] *= 0.6; }
             }
 
             return { L: L, R: R };
           } catch(e) {
-            if (ac) try { ac.close(); } catch(x) {}
+            try { if (ac) ac.close(); } catch(x){}
             return null;
           }
         }
@@ -19332,9 +19349,9 @@ If you want to offset all timestamps of a track such that the first one is zero,
             });
           }
 
-          // تحميل الصوت — مخصص أو آية الكرسي تلقائياً
+          // تحميل الصوت — مخصص أو آية الكرسي تلقائياً (max 15 ثانية)
           _athkProgSetInfo("تحميل الصوت...");
-          var audioData = await _athkLoadAudio(durSec);
+          var audioData = await _athkRace(_athkLoadAudio(durSec), 15000);
 
           // Canvas الرسم
           var c = document.createElement("canvas"); c.width = W; c.height = H;
@@ -19371,8 +19388,11 @@ If you want to offset all timestamps of a track such that the first one is zero,
             for (var _ci = 0; _ci < ["avc1.42001e","avc1.42001f","avc1.4d0029"].length; _ci++) {
               var _cod = ["avc1.42001e","avc1.42001f","avc1.4d0029"][_ci];
               try {
-                var _s = await VideoEncoder.isConfigSupported({ codec: _cod, width: W, height: H, bitrate: 1500000, framerate: FPS });
-                if (_s.supported) {
+                var _chk = await _athkRace(
+                  VideoEncoder.isConfigSupported({ codec: _cod, width: W, height: H, bitrate: 1500000, framerate: FPS }),
+                  3000
+                );
+                if (_chk && _chk.supported) {
                   videoEnc.configure({ codec: _cod, width: W, height: H, bitrate: 1500000, framerate: FPS });
                   codecOk = true; break;
                 }
@@ -19400,11 +19420,19 @@ If you want to offset all timestamps of a track such that the first one is zero,
                 var progress = fi / (totalFrames - 1 || 1);
                 _athkDrawFrame(ctx, sel, W, H, bgImg, progress, cfg);
 
-                // VideoFrame
-                var bmp = await createImageBitmap(c);
-                var vf = new VideoFrame(bmp, { timestamp: fi * frameDurUs, duration: frameDurUs });
+                // VideoFrame (مع fallback لو createImageBitmap مش متاح)
+                var vf;
+                try {
+                  if (typeof createImageBitmap === "function") {
+                    var bmp = await createImageBitmap(c);
+                    vf = new VideoFrame(bmp, { timestamp: fi * frameDurUs, duration: frameDurUs });
+                    bmp.close();
+                  } else {
+                    vf = new VideoFrame(c, { timestamp: fi * frameDurUs, duration: frameDurUs });
+                  }
+                } catch(_vfe) { continue; }
                 videoEnc.encode(vf, { keyFrame: fi % 60 === 0 });
-                vf.close(); bmp.close();
+                vf.close();
 
                 // AudioChunk
                 if (audioEnc && audioData) {
