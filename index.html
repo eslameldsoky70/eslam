@@ -19314,6 +19314,7 @@ If you want to offset all timestamps of a track such that the first one is zero,
 
         /* ── التصدير الرئيسي ── */
         window.exportAthkarAsVideo = async function () {
+          try {
           var sel = _selectedAthkarPage;
           if (!sel) { if (typeof toast$ === "function") toast$("⚠ اختر ذكراً أولاً"); return; }
 
@@ -19334,20 +19335,22 @@ If you want to offset all timestamps of a track such that the first one is zero,
           _athkProgShow(durSec);
           _athkProgSetInfo("جاري التحضير...");
 
-          // انتظار الخطوط
-          if (document.fonts) await document.fonts.ready;
+          // انتظار الخطوط (max 3 ثواني)
+          if (document.fonts) await _athkRace(document.fonts.ready, 3000);
 
-          // تحميل الخلفية
+          // تحميل الخلفية (max 8 ثواني)
           var bgImg = null;
-          var bgEl = document.getElementById("bgMedia");
-          if (bgEl && bgEl.tagName === "IMG" && bgEl.src) {
-            bgImg = await new Promise(function(res) {
-              if (bgEl.complete && bgEl.naturalWidth) { res(bgEl); return; }
-              var tmp = new Image(); tmp.crossOrigin = "anonymous";
-              tmp.onload = function() { res(tmp); }; tmp.onerror = function() { res(null); };
-              tmp.src = bgEl.src;
-            });
-          }
+          try {
+            var bgEl = document.getElementById("bgMedia");
+            if (bgEl && bgEl.tagName === "IMG" && bgEl.src) {
+              bgImg = await _athkRace(new Promise(function(res) {
+                if (bgEl.complete && bgEl.naturalWidth) { res(bgEl); return; }
+                var tmp = new Image(); tmp.crossOrigin = "anonymous";
+                tmp.onload = function() { res(tmp); }; tmp.onerror = function() { res(null); };
+                tmp.src = bgEl.src;
+              }), 8000);
+            }
+          } catch(bgErr) { bgImg = null; }
 
           // تحميل الصوت — مخصص أو آية الكرسي تلقائياً (max 15 ثانية)
           _athkProgSetInfo("تحميل الصوت...");
@@ -19384,23 +19387,30 @@ If you want to offset all timestamps of a track such that the first one is zero,
               error: function(e) { vEncErr = e; }
             });
 
+            /* اختر أول codec مدعوم — يجب Level 4.0+ لدقة 1080×1920 */
+            var _codecs = ["avc1.420028","avc1.4d0028","avc1.4d0029","avc1.640028","avc1.640029"];
             var codecOk = false;
-            for (var _ci = 0; _ci < ["avc1.42001e","avc1.42001f","avc1.4d0029"].length; _ci++) {
-              var _cod = ["avc1.42001e","avc1.42001f","avc1.4d0029"][_ci];
+            for (var _ci = 0; _ci < _codecs.length; _ci++) {
+              var _cod = _codecs[_ci];
               try {
                 var _chk = await _athkRace(
                   VideoEncoder.isConfigSupported({ codec: _cod, width: W, height: H, bitrate: 1500000, framerate: FPS }),
                   3000
                 );
                 if (_chk && _chk.supported) {
-                  videoEnc.configure({ codec: _cod, width: W, height: H, bitrate: 1500000, framerate: FPS });
-                  codecOk = true; break;
+                  try {
+                    videoEnc.configure({ codec: _cod, width: W, height: H, bitrate: 1500000, framerate: FPS });
+                    codecOk = true; break;
+                  } catch(cfgE) { continue; }
                 }
               } catch(e) {}
             }
             if (!codecOk) {
               videoEnc.close();
-              canMP4 = false; // سيسقط للـ WebM fallback
+              canMP4 = false;
+              console.warn("Athkar export: no supported H.264 codec at 1080x1920");
+            } else {
+              _athkProgSetInfo("MP4 · " + _cod + _audioLabel);
             }
 
             if (canMP4) {
@@ -19457,11 +19467,11 @@ If you want to offset all timestamps of a track such that the first one is zero,
                   ad.close();
                 }
 
-                // تحديث التقدم كل 5 إطارات
-                if (fi % 5 === 0) {
+                // تحديث التقدم — كل إطار للـ 30 الأولى ثم كل 3 إطارات
+                if (fi < 30 || fi % 3 === 0) {
                   var elapsed = (performance.now() - _startMs) / 1000;
-                  var pct = (fi / totalFrames) * 100;
-                  var remaining = elapsed > 0 ? (elapsed / pct * (100 - pct)) : durSec;
+                  var pct = Math.max(1, (fi / totalFrames) * 100);
+                  var remaining = elapsed > 0 && pct > 0 ? (elapsed / pct * (100 - pct)) : durSec;
                   _athkProgUpdate(pct, remaining, durSec);
                   await new Promise(function(r) { setTimeout(r, 0); });
                 }
@@ -19498,7 +19508,7 @@ If you want to offset all timestamps of a track such that the first one is zero,
           }
 
           // ── Fallback: WebM عبر MediaRecorder ──
-          if (!window.MediaRecorder) {
+          if (!window.MediaRecorder || typeof c.captureStream !== "function") {
             _athkProgHide();
             if (typeof toast$ === "function") toast$("❌ المتصفح لا يدعم تسجيل الفيديو");
             return;
@@ -19506,7 +19516,12 @@ If you want to offset all timestamps of a track such that the first one is zero,
           _athkProgSetInfo("WebM · 1080×1920 (fallback)");
           var mimeType = ["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"]
             .find(function(t) { return MediaRecorder.isTypeSupported(t); }) || "video/webm";
-          var stream = c.captureStream(FPS);
+          var stream;
+          try { stream = c.captureStream(FPS); } catch(_cse) {
+            _athkProgHide();
+            if (typeof toast$ === "function") toast$("❌ captureStream غير مدعوم");
+            return;
+          }
           var rec = new MediaRecorder(stream, { mimeType: mimeType, videoBitsPerSecond: 1500000 });
           var chunks = [];
           rec.ondataavailable = function(e) { if (e.data && e.data.size > 0) chunks.push(e.data); };
@@ -19533,6 +19548,12 @@ If you want to offset all timestamps of a track such that the first one is zero,
             else { rec.stop(); }
           }
           requestAnimationFrame(_wbLoop);
+
+          } catch(exportErr) {
+            console.error("exportAthkarAsVideo error:", exportErr);
+            _athkProgHide();
+            if (typeof toast$ === "function") toast$("❌ خطأ: " + (exportErr && exportErr.message ? exportErr.message : String(exportErr)));
+          }
         };
 
         // ── للتوافق مع الكود القديم في tab-athkar ──
