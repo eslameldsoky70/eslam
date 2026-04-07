@@ -9590,6 +9590,25 @@ If you want to offset all timestamps of a track such that the first one is zero,
             🎬 تصدير ريلز
           </button>
         </div>
+        <p id="athkAudioHint" style="margin:8px 0 0;font-size:10px;color:#6e8878;text-align:center;line-height:1.5;">
+          🎙 سيُقرأ الذكر تلقائياً بالصوت
+        </p>
+        <script>
+          (function(){
+            function _updateAthkAudioHint(){
+              var h = document.getElementById("athkAudioHint");
+              if (!h) return;
+              if (window._casAudioFile) {
+                h.innerHTML = '🎵 الصوت المرفوع سيُستخدم بدل الصوت التلقائي <b style="color:#7ec897">✓</b>';
+                h.style.color = "#7ec897";
+              } else {
+                h.innerHTML = '🎙 سيُقرأ الذكر تلقائياً بالصوت';
+                h.style.color = "#6e8878";
+              }
+            }
+            setInterval(_updateAthkAudioHint, 1500);
+          })();
+        </script>
       </div>
       <!-- منطقة كتابة ذكر مخصص -->
       <div id="athkarCustomBox" style="display: none; padding: 16px">
@@ -19237,12 +19256,7 @@ If you want to offset all timestamps of a track such that the first one is zero,
           ctx.restore();
         }
 
-        /* ── تحميل الصوت — مخصص أولاً، وإلا آية الكرسي تلقائياً ── */
-        // مصادر صوت خلفية — آية الكرسي (أكثر آية مناسبة لأذكار الصباح والمساء)
-        var _ATHK_AUDIO_URLS = [
-          "https://everyayah.com/data/Alafasy_128kbps/002255.mp3",
-          "https://cdn.islamic.network/quran/audio/128/ar.alafasy/255.mp3"
-        ];
+        /* ── تحميل الصوت — مخصص أو TTS تلقائي من السيرفر ── */
 
         /* مساعد: تنفيذ promise مع timeout ← يرجع null لو تجاوز الوقت */
         function _athkRace(promise, ms) {
@@ -19252,62 +19266,63 @@ If you want to offset all timestamps of a track such that the first one is zero,
           ]);
         }
 
-        async function _athkLoadAudio(durSec) {
-          var SR = 44100;
-          var ac = null;
+        async function _athkLoadAudio(durSec, dhikrText) {
+          var TARGET_SR = 44100;
           try {
-            ac = new (window.AudioContext || window.webkitAudioContext)();
-            ac.resume().catch(function(){});
-            var buf = null;
+            var rawBuf = null;
+            var isTTS = false;
 
+            /* ── 1. احصل على الـ ArrayBuffer ── */
             if (window._casAudioFile) {
-              // 1. صوت مخصص مرفوع من المستخدم
-              var ab = await window._casAudioFile.arrayBuffer();
-              buf = await _athkRace(
-                new Promise(function(res, rej) { ac.decodeAudioData(ab, res, rej); }),
-                8000
-              );
-            } else {
-              // 2. آية الكرسي تلقائياً من CDN (timeout 6 ثواني لكل محاولة)
-              for (var ui = 0; ui < _ATHK_AUDIO_URLS.length; ui++) {
-                try {
-                  var ctrl = new AbortController();
-                  var tid = setTimeout(function() { ctrl.abort(); }, 6000);
-                  var resp = await fetch(_ATHK_AUDIO_URLS[ui], { signal: ctrl.signal });
-                  clearTimeout(tid);
-                  if (!resp.ok) continue;
-                  var ab2 = await _athkRace(resp.arrayBuffer(), 8000);
-                  if (!ab2) continue;
-                  buf = await _athkRace(
-                    new Promise(function(res, rej) { ac.decodeAudioData(ab2, res, rej); }),
-                    5000
-                  );
-                  if (buf) break;
-                } catch(fe) { continue; }
-              }
+              rawBuf = await window._casAudioFile.arrayBuffer();
+            } else if (dhikrText) {
+              isTTS = true;
+              try {
+                var ttsUrl = "/islam-reels/api/tts?text=" + encodeURIComponent(dhikrText);
+                var ctrl = new AbortController();
+                var tid = setTimeout(function() { ctrl.abort(); }, 12000);
+                var resp = await fetch(ttsUrl, { signal: ctrl.signal });
+                clearTimeout(tid);
+                if (resp.ok) rawBuf = await _athkRace(resp.arrayBuffer(), 10000);
+              } catch(e) { rawBuf = null; }
             }
+            if (!rawBuf) return null;
 
-            if (!buf) { try { ac.close(); } catch(x){} return null; }
-            try { ac.close(); } catch(x){}
+            /* ── 2. فك تشفير الـ MP3/audio إلى PCM ── */
+            var decCtx = new (window.AudioContext || window.webkitAudioContext)();
+            var decoded = await _athkRace(
+              new Promise(function(res, rej) { decCtx.decodeAudioData(rawBuf.slice(0), res, rej); }),
+              10000
+            );
+            try { decCtx.close(); } catch(x){}
+            if (!decoded) return null;
 
-            var total = Math.ceil(durSec * SR);
-            var L = new Float32Array(total), R = new Float32Array(total);
-            var srcL = buf.getChannelData(0);
-            var srcR = buf.numberOfChannels > 1 ? buf.getChannelData(1) : srcL;
+            /* ── 3. إعادة المعاينة إلى 44100Hz عبر OfflineAudioContext ── */
+            var totalFrames = Math.ceil(durSec * TARGET_SR);
+            var offCtx = new OfflineAudioContext(2, totalFrames, TARGET_SR);
+            var src = offCtx.createBufferSource();
 
-            for (var off = 0; off < total; off += buf.length) {
-              var cp = Math.min(buf.length, total - off);
-              L.set(srcL.subarray(0, cp), off);
-              R.set(srcR.subarray(0, cp), off);
-            }
+            /* حوّل الـ buffer إلى stereo إذا كان mono */
+            var stereo = offCtx.createBuffer(2, decoded.length, decoded.sampleRate);
+            stereo.copyToChannel(decoded.getChannelData(0), 0);
+            stereo.copyToChannel(decoded.numberOfChannels > 1 ? decoded.getChannelData(1) : decoded.getChannelData(0), 1);
 
-            if (!window._casAudioFile) {
-              for (var si2 = 0; si2 < total; si2++) { L[si2] *= 0.6; R[si2] *= 0.6; }
-            }
+            src.buffer = stereo;
+            src.loop = true;
+            src.loopEnd = stereo.duration;
+            src.connect(offCtx.destination);
+            src.start(0);
 
-            return { L: L, R: R };
+            var resampled = await _athkRace(offCtx.startRendering(), 20000);
+            if (!resampled) return null;
+
+            return {
+              L: resampled.getChannelData(0),
+              R: resampled.getChannelData(1),
+              isTTS: isTTS
+            };
           } catch(e) {
-            try { if (ac) ac.close(); } catch(x){}
+            console.warn("_athkLoadAudio error:", e);
             return null;
           }
         }
@@ -19352,9 +19367,9 @@ If you want to offset all timestamps of a track such that the first one is zero,
             }
           } catch(bgErr) { bgImg = null; }
 
-          // تحميل الصوت — مخصص أو آية الكرسي تلقائياً (max 15 ثانية)
-          _athkProgSetInfo("تحميل الصوت...");
-          var audioData = await _athkRace(_athkLoadAudio(durSec), 15000);
+          // تحميل الصوت — مخصص أو TTS تلقائي (max 18 ثانية)
+          _athkProgSetInfo("جاري توليد الصوت...");
+          var audioData = await _athkRace(_athkLoadAudio(durSec, sel.text), 18000);
 
           // Canvas الرسم
           var c = document.createElement("canvas"); c.width = W; c.height = H;
@@ -19367,7 +19382,7 @@ If you want to offset all timestamps of a track such that the first one is zero,
           if (canMP4) {
             // ── مسار MP4 عبر WebCodecs ──
             var _audioLabel = audioData
-              ? (window._casAudioFile ? " · صوت مخصص 🎵" : " · آية الكرسي 🎵")
+              ? (window._casAudioFile ? " · صوت مخصص 🎵" : (audioData.isTTS ? " · صوت الذكر 🎙" : " · صوت 🎵"))
               : " · بدون صوت";
             _athkProgSetInfo("MP4 · 1080×1920" + _audioLabel);
             var hasAudioEnc = typeof AudioEncoder !== "undefined";
@@ -19456,7 +19471,7 @@ If you want to offset all timestamps of a track such that the first one is zero,
                     interleaved[si * 2 + 1] = chunkR[si];
                   }
                   var ad = new AudioData({
-                    format: "f32-interleaved",
+                    format: "f32",
                     sampleRate: SR,
                     numberOfFrames: chunkL.length,
                     numberOfChannels: 2,
